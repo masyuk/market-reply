@@ -27,9 +27,9 @@ def main() -> None:
         ticker = c1.text_input("Ticker", key="ticker", placeholder="AAAPL, etc.").strip().upper()
 
         period_min = c2.number_input(
-            "Window (minutes)",
+            "Minutes (+/-)",
             min_value=1, max_value=120, value=10, step=5,
-            help="Shows ± this many minutes around the selected time.",
+            help="Shows +/- this many minutes around the selected time.",
             key="period",
         )
 
