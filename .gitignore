@@ -11,7 +11,9 @@ venv/
 env/
 ENV/
 .env/
-.venv/
+.venv*
+
+.vscode/
 
 # Distribution / packaging
 dist/

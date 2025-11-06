@@ -1,3 +1,4 @@
+from pathlib import Path
 import re
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -36,7 +37,7 @@ def main() -> None:
         the_date = c3.date_input("Date", value=date.today(), format="YYYY-MM-DD", key="date")
 
         # time_input requires step >= 60 seconds
-        c4.text_input("NY Time (HH:MM:SS)", key='time', value='09:00:00', help="24h format, e.g., 09:30:05")
+        c4.text_input("NY Time (hh:mm:ss)", key='time', value='09:00:00', help="24h format, e.g., 09:30:05")
         time_str = st.session_state.get("time")
 
         api_key = st.text_input("Polygon API Key", type="password", key="key")
@@ -81,20 +82,12 @@ def main() -> None:
 
 # --------------------------- Data layer ---------------------------------
 @st.cache_data(show_spinner=False)
-def fetch_exchanges_cached(api_key: str) -> pd.DataFrame:
-    """Fetch exchanges once per API key; keep only id/name/mic and index by id."""
-    with PolygonTradesDriver(api_key=api_key) as drv:
-        exchanges = drv.get_exchanges()
+def fetch_exchanges_cached() -> pd.DataFrame:
 
-    df = pd.DataFrame(exchanges.get("results", []))
-    if df.empty:
-        return pd.DataFrame(columns=["id", "name", "mic"]).set_index("id")
+    df_exchanges = pd.read_parquet('data/exchanges.parquet', engine='pyarrow')
+    df_exchanges = df_exchanges.set_index('id')[['name', 'mic']]
 
-    cols = [c for c in ["id", "name", "mic"] if c in df.columns]
-    df = df[cols].drop_duplicates()
-    if "id" in df.columns:
-        df = df.set_index("id")
-    return df
+    return df_exchanges
 
 
 def fetch_data(api_key: str, ticker: str, start_utc: str, end_utc: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -113,7 +106,7 @@ def fetch_data(api_key: str, ticker: str, start_utc: str, end_utc: str) -> tuple
             if col in df.columns:
                 df[col] = pd.to_datetime(df[col], unit="ns", errors="coerce")
 
-    df_exchanges = fetch_exchanges_cached(api_key)
+    df_exchanges = fetch_exchanges_cached()
 
     return df_trades, df_quotes, df_exchanges
 
@@ -128,7 +121,7 @@ def prepare_joined_df(df_trades: pd.DataFrame, df_quotes: pd.DataFrame, df_excha
         "exchange": "trade_ex",
     }
     trades_needed = [c for c in trade_cols.keys() if c in df_trades.columns]
-    df_trades_c = (
+    df_trades_cleaned = (
         df_trades[trades_needed]
         .rename(columns=trade_cols)
         .sort_values("time", kind="stable")
@@ -137,32 +130,23 @@ def prepare_joined_df(df_trades: pd.DataFrame, df_quotes: pd.DataFrame, df_excha
     # --- Quotes
     quote_cols = ["ask_price", "ask_size", "ask_exchange", "bid_price", "bid_size", "bid_exchange"]
     quotes_needed = ["participant_timestamp"] + [c for c in quote_cols if c in df_quotes.columns]
-    df_quotes_c = (
+    df_quotes_cleaned = (
         df_quotes[quotes_needed]
         .rename(columns={"participant_timestamp": "time"})
         .sort_values("time", kind="stable")
     )
 
     # --- Join
-    df = pd.merge(df_trades_c, df_quotes_c, on="time", how="outer", sort=True)
+    trade_quote_df = pd.merge(df_trades_cleaned, df_quotes_cleaned, on='time', how='outer')
 
-    # --- Exchange mapping: id -> mic (fallback to original if missing)
-    mic_lookup = df_exchanges["mic"].to_dict() if "mic" in df_exchanges.columns else {}
-    for col in ["trade_ex", "ask_exchange", "bid_exchange"]:
-        if col in df.columns:
-            # .map keeps NaN where id not found; prefer original if already a string
-            df[col] = np.where(
-                df[col].apply(lambda x: isinstance(x, (int, np.integer))),
-                df[col].map(mic_lookup),
-                df[col],
-            )
+    lookup = df_exchanges['mic'].to_dict()
+    ex_cols = ['trade_ex', 'ask_exchange', 'bid_exchange']
+    quotes_col = ['ask_price', 'ask_size', 'ask_exchange', 'bid_price', 'bid_size', 'bid_exchange']
+    trade_quote_df[ex_cols] = trade_quote_df[ex_cols].replace(lookup)
 
-    # --- Forward-fill quote fields to align with trades
-    for qc in ["ask_price", "ask_size", "ask_exchange", "bid_price", "bid_size", "bid_exchange"]:
-        if qc in df.columns:
-            df[qc] = df[qc].ffill()
+    trade_quote_df[quotes_col] = trade_quote_df[quotes_col].ffill()
 
-    return df
+    return trade_quote_df
 
 
 # --------------------------- Charting -----------------------------------
@@ -177,59 +161,46 @@ def build_chart(trade_quote_df: pd.DataFrame, ticker: str) -> alt.Chart:
         ],
         ignore_index=True,
     )
-    prices = prices.replace([np.inf, -np.inf], np.nan).dropna()
-    if prices.empty:
-        y_min, y_max = 0, 1
-    else:
-        mid = float(prices.mean())
-        y_min, y_max = mid * 0.995, mid * 1.005
+    y_min = prices.mean() * 0.995
+    y_max = prices.mean() * 1.005
 
     base = alt.Chart(trade_quote_df).encode(
         x=alt.X("time:T", title="Time")
     )
 
-    # Bid/ask area band
-    q_area = base.mark_area(opacity=0.2).encode(
-        alt.Y("bid_price:Q", title="Price", scale=alt.Scale(domain=[y_min, y_max])),
-        alt.Y2("ask_price:Q"),
-        tooltip=[
-            alt.Tooltip("bid_price:Q", title="Bid"),
-            alt.Tooltip("ask_price:Q", title="Ask"),
-        ],
+    q_area = base.mark_area(opacity=0.2, color="#fbf48e").encode(
+        alt.Y("bid_price:Q", title='Bid Price', scale=alt.Scale(domain=[y_min, y_max])),
+        alt.Y2("ask_price:Q", title='Ask Price')
     )
 
-    # Trades as circles
     t_point = base.mark_circle(opacity=1, filled=True).encode(
-        alt.Y("trade_price:Q", title="Price"),
-        alt.Size("trade_size:Q", title="Trade Size", scale=alt.Scale(range=[20, 500])),
-        alt.Color("trade_ex:N", title="Trade Ex"),
-        tooltip=[
-            alt.Tooltip("trade_price:Q", title="Trade Price"),
-            alt.Tooltip("trade_size:Q", title="Trade Size"),
-            alt.Tooltip("trade_ex:N", title="Trade Ex"),
-        ],
+        alt.Y("trade_price:Q", title="Trade Price"),
+        alt.Size('trade_size', title='Trade Size', scale=alt.Scale(range=[20, 500])),
+        alt.Color('trade_ex:N', title='Exchange', scale=alt.Scale(scheme='category10')),
+        tooltip=['trade_price', 'trade_size', 'trade_ex']
     )
 
-    # Quote points + lines
-    ask_pts = base.mark_point().encode(
-        alt.Y("ask_price:Q", title="Price"),
-        alt.Size("ask_size:Q", title="Ask Size", scale=alt.Scale(range=[2, 5])),
-        tooltip=[alt.Tooltip("ask_price:Q", title="Ask"), alt.Tooltip("ask_size:Q", title="Ask Size"), "ask_exchange:N"],
+    q_area_a = base.mark_point(color="#006c09").encode(
+        alt.Y("ask_price:Q", title="Ask Price"),
+        alt.Size('ask_size', title='Trade Size', scale=alt.Scale(range=[2, 5])),
+        tooltip=['ask_price', 'ask_size', 'ask_exchange']
     )
-    bid_pts = base.mark_point().encode(
-        alt.Y("bid_price:Q", title="Price"),
-        alt.Size("bid_size:Q", title="Bid Size", scale=alt.Scale(range=[2, 5])),
-        tooltip=[alt.Tooltip("bid_price:Q", title="Bid"), alt.Tooltip("bid_size:Q", title="Bid Size"), "bid_exchange:N"],
-    )
-    bid_line = base.mark_line(opacity=0.7, strokeWidth=1).encode(y="bid_price:Q")
-    ask_line = base.mark_line(opacity=0.7, strokeWidth=1).encode(y="ask_price:Q")
 
-    chart = (q_area + t_point + bid_line + ask_line + ask_pts + bid_pts).properties(
-        width=950,
+    q_area_b = base.mark_point(color="#7b0000").encode(
+        alt.Y("bid_price:Q", title="Bid Price"),
+        alt.Size('bid_size', title='Trade Size', scale=alt.Scale(range=[2, 5])),
+        tooltip=['bid_price', 'bid_size', 'bid_exchange']
+    )
+
+    bid_line = base.mark_line(opacity=0.7, strokeWidth=1, color="#7b0000").encode(y="bid_price:Q")
+    ask_line = base.mark_line(opacity=0.7, strokeWidth=1, color="#006c09").encode(y="ask_price:Q")
+
+    chart = (q_area + t_point + bid_line + ask_line + q_area_a + q_area_b).properties(
+        width=900,
         height=450,
-        title=f"{ticker} — Trades and Bid-Ask Spread",
+        title=f"{ticker} – Trades and Bid-Ask Spread"
     ).resolve_scale(
-        size="independent"
+        size='independent'
     ).interactive()
 
     return chart
