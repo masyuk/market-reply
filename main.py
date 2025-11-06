@@ -37,7 +37,7 @@ def main() -> None:
         the_date = c3.date_input("Date", value=date.today(), format="YYYY-MM-DD", key="date")
 
         # time_input requires step >= 60 seconds
-        c4.text_input("NY Time (hh:mm:ss)", key='time', value='09:00:00', help="24h format, e.g., 09:30:05")
+        c4.text_input("NY Time (`HH:MM:SS`))", key='time', value='09:00:00', help="24h format, e.g., 09:30:05")
         time_str = st.session_state.get("time")
 
         api_key = st.text_input("Polygon API Key", type="password", key="key")
