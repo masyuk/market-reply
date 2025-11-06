@@ -1,5 +1,5 @@
 import re
-from datetime import date, datetime, timedelta, time as dtime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import altair as alt
@@ -23,7 +23,7 @@ def main() -> None:
 
     with st.form("controls"):
         c1, c2 = st.columns(2)
-        ticker = c1.text_input("Ticker", key="ticker", placeholder="AAPL").strip().upper()
+        ticker = c1.text_input("Ticker", key="ticker", placeholder="AAAPL, etc.").strip().upper()
 
         period_min = c2.number_input(
             "Window (minutes)",
@@ -33,17 +33,16 @@ def main() -> None:
         )
 
         c3, c4 = st.columns(2)
-        the_date = c3.date_input("Date (NY)", value=date.today(), format="YYYY-MM-DD", key="date")
+        the_date = c3.date_input("Date", value=date.today(), format="YYYY-MM-DD", key="date")
 
         # time_input requires step >= 60 seconds
-        default_time_str = datetime.now(ZoneInfo("America/New_York")).strftime("%H:%M:%S")
-        c4.text_input("NY Time (HH:MM:SS)", key='time', value=default_time_str, help="24h format, e.g., 09:30:05")
+        c4.text_input("NY Time (HH:MM:SS)", key='time', value='09:00:00', help="24h format, e.g., 09:30:05")
         time_str = st.session_state.get("time")
 
         api_key = st.text_input("Polygon API Key", type="password", key="key")
 
         # MUST be inside the form:
-        run = st.form_submit_button("Run")
+        run = st.form_submit_button("Submit")
 
     if not run:
         return
@@ -75,9 +74,6 @@ def main() -> None:
         trade_quote_df = prepare_joined_df(df_trades, df_quotes, df_exchanges)
         chart = build_chart(trade_quote_df, ticker)
         st.altair_chart(chart, use_container_width=True)
-
-        with st.expander("Preview merged data"):
-            st.dataframe(trade_quote_df.head(200))
 
     except Exception as e:
         st.exception(e)
