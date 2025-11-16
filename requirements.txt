@@ -1,3 +1,4 @@
+-e .
 altair==5.5.0
 anyio==4.11.0
 attrs==25.4.0
