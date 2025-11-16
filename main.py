@@ -1,5 +1,3 @@
-from pathlib import Path
-import re
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -9,6 +7,7 @@ import pandas as pd
 import streamlit as st
 
 from api.polygon.client import PolygonTradesDriver
+import plotly.graph_objects as go
 
 alt.data_transformers.disable_max_rows()
 TZ_NY = ZoneInfo("America/New_York")
@@ -40,7 +39,9 @@ def main() -> None:
         c4.text_input("NY Time (`HH:MM:SS`)", key='time', value='09:00:00', help="24h format, e.g., 09:30:05")
         time_str = st.session_state.get("time")
 
-        api_key = st.text_input("Polygon API Key", type="password", key="key")
+        c5, c6 = st.columns(2)
+        api_key = c5.text_input("Polygon API Key", type="password", key="key")
+        c6.selectbox('Select engine', ['Altair', 'Plotly'], key="chart_engine")
 
         # MUST be inside the form:
         run = st.form_submit_button("Submit")
@@ -73,12 +74,25 @@ def main() -> None:
             return
 
         trade_quote_df = prepare_joined_df(df_trades, df_quotes, df_exchanges)
-        chart = build_chart(trade_quote_df, ticker)
-        st.altair_chart(chart, use_container_width=True)
+
+        match st.session_state.get("chart_engine"):
+            case 'Altair':
+                chart = build_chart_alt(trade_quote_df, ticker)
+                st.altair_chart(chart, use_container_width=True)
+                return
+            case 'Plotly':
+                chart = build_chart(trade_quote_df, ticker)
+                st.plotly_chart(chart, use_container_width=True,
+                config={
+                    'scrollZoom': True,
+                    'displayModeBar': True,
+                    'displaylogo': False,
+                    'modeBarButtonsToRemove': ['select2d', 'lasso2d', 'zoomIn2d', 'zoomOut2d', 'resetScale2d', 'toImage']
+                })
+                return
 
     except Exception as e:
         st.exception(e)
-
 
 # --------------------------- Data layer ---------------------------------
 @st.cache_data(show_spinner=False)
@@ -150,7 +164,108 @@ def prepare_joined_df(df_trades: pd.DataFrame, df_quotes: pd.DataFrame, df_excha
 
 
 # --------------------------- Charting -----------------------------------
-def build_chart(trade_quote_df: pd.DataFrame, ticker: str) -> alt.Chart:
+def build_chart(trade_quote_df: pd.DataFrame, ticker: str):
+    fig = go.Figure()
+
+    df = trade_quote_df.sort_values("time").copy()
+
+    df_trades = df[['time', 'trade_price', 'trade_size', 'trade_ex']]
+    df_l1_ask = df[['time', 'ask_price', 'ask_size', 'ask_exchange']]
+    df_l1_bid = df[['time', 'bid_price', 'bid_size', 'bid_exchange']]
+
+    # 1. Bid/Ask spread
+    fig.add_trace(go.Scattergl(
+        x=df_l1_ask['time'],
+        y=df_l1_ask['ask_price'],
+        line=dict(width=1, color='#006c09'),
+        name='Ask',
+        hoverinfo='skip',
+    ))
+
+    fig.add_trace(go.Scattergl(
+        name="Ask Price", 
+        mode="markers", 
+        marker=dict(size=4, color='grey'),
+        x=df_l1_ask["time"],
+        y=df_l1_ask["ask_price"]
+    ))
+
+    fig.add_trace(go.Scattergl(
+        x=df_l1_bid['time'],
+        y=df_l1_bid['bid_price'],
+        line=dict(width=1, color='#7b0000'),
+        name='Bid',
+        fill='tonexty',
+        fillcolor='rgba(251, 244, 142, 0.25)',
+        hoverinfo='skip'
+    ))
+
+    fig.add_trace(go.Scattergl(
+        name="Bid Price", 
+        mode="markers", 
+        marker=dict(size=4, color='grey'),
+        x=df_l1_bid["time"],
+        y=df_l1_bid["bid_price"]
+    ))
+
+    # 2. Trades
+    raw_sizes = df_trades['trade_size'].fillna(0).clip(lower=0)
+    max_size = raw_sizes.replace(0, 1).max()       # avoid division by zero
+    marker_sizes = raw_sizes / max_size * 400 + 4   # scale to reasonable range
+    marker_sizes[raw_sizes == 0] = 1            # quote-only rows = tiny invisible dot
+
+    fig.add_trace(go.Scattergl(
+        x=df_trades['time'],
+        y=df_trades['trade_price'],
+        mode='markers',
+        name='Trades',
+        marker=dict(
+            size=marker_sizes,
+            sizemode='area',
+            sizemin=1,
+            color=pd.Categorical(df_trades['trade_ex']).codes,
+            colorscale='Viridis',
+            opacity=0.85,
+            line=dict(width=0)
+        ),
+        text=df_trades['trade_ex'] + ' | ' + df_trades['trade_size'].fillna(0).astype(int).astype(str),
+        hovertemplate=
+            '<b>Trade</b><br>' +
+            'Time: %{x|%H:%M:%S.%L}<br>' +
+            'Price: %{y:,.4f}<br>' +
+            'Size: %{text}<br>' +
+            'Exchange: ' + df_trades['trade_ex'] +
+            '<extra></extra>'
+    ))
+
+    # 3. Show 
+    fig.update_layout(
+        showlegend=False,
+        title=f"{ticker} – Full Tick-by-Tick Replay",
+        height=700,
+        hovermode='x unified',
+        margin=dict(l=40, r=40, t=60, b=20),
+        dragmode='zoom',
+        xaxis=dict(
+            showgrid=True,
+            gridwidth=1,
+            gridcolor="rgba(128, 128, 128, 0.15)",
+            rangeslider=dict(visible=True),
+            fixedrange=False,
+        ),
+        yaxis=dict(
+            showgrid=True,
+            gridwidth=1,
+            gridcolor="rgba(128, 128, 128, 0.15)",
+            fixedrange=False
+        ),
+    )
+
+
+    return fig
+
+
+def build_chart_alt(trade_quote_df: pd.DataFrame, ticker: str) -> alt.Chart:
     """Create layered Altair chart: bid/ask band, trades, and quote points."""
     # Y domain: gentle band around mid (robust to outliers)
     prices = pd.concat(
