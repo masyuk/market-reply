@@ -5,9 +5,9 @@ import altair as alt
 import numpy as np
 import pandas as pd
 import streamlit as st
+import plotly.graph_objects as go
 
 from api.polygon.client import PolygonTradesDriver
-import plotly.graph_objects as go
 
 alt.data_transformers.disable_max_rows()
 TZ_NY = ZoneInfo("America/New_York")
