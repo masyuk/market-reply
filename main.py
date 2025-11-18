@@ -41,7 +41,7 @@ def main() -> None:
 
         c5, c6 = st.columns(2)
         api_key = c5.text_input("Enter your key", type="password", key="key")
-        c6.selectbox('Select engine', ['Plotly', 'Altair'], key="chart_engine")
+        c6.selectbox('Select engine', ['Plotly', 'Altair', 'Table'], key="chart_engine")
 
         # MUST be inside the form:
         run = st.form_submit_button("Submit")
@@ -90,6 +90,9 @@ def main() -> None:
                     'modeBarButtonsToRemove': ['select2d', 'lasso2d', 'zoomIn2d', 'zoomOut2d', 'resetScale2d', 'toImage']
                 })
                 return
+            case 'Table':           
+                st.table(trade_quote_df)
+                return
 
     except Exception as e:
         st.exception(e)
@@ -136,7 +139,7 @@ def prepare_joined_df(df_trades: pd.DataFrame, df_quotes: pd.DataFrame, df_excha
     """Clean columns, map exchange IDs → MICs, join trades & quotes on participant time, ffill quotes."""
     # --- Trades
     trade_cols = {
-        "participant_timestamp": "time",
+        "participant_timestamp": "participant_time_ny",
         "price": "trade_price",
         "size": "trade_size",
         "exchange": "trade_ex",
@@ -145,7 +148,7 @@ def prepare_joined_df(df_trades: pd.DataFrame, df_quotes: pd.DataFrame, df_excha
     df_trades_cleaned = (
         df_trades[trades_needed]
         .rename(columns=trade_cols)
-        .sort_values("time", kind="stable")
+        .sort_values("participant_time_ny", kind="stable")
     )
 
     # --- Quotes
@@ -153,12 +156,12 @@ def prepare_joined_df(df_trades: pd.DataFrame, df_quotes: pd.DataFrame, df_excha
     quotes_needed = ["participant_timestamp"] + [c for c in quote_cols if c in df_quotes.columns]
     df_quotes_cleaned = (
         df_quotes[quotes_needed]
-        .rename(columns={"participant_timestamp": "time"})
-        .sort_values("time", kind="stable")
+        .rename(columns={"participant_timestamp": "participant_time_ny"})
+        .sort_values("participant_time_ny", kind="stable")
     )
 
     # --- Join
-    trade_quote_df = pd.merge(df_trades_cleaned, df_quotes_cleaned, on='time', how='outer')
+    trade_quote_df = pd.merge(df_trades_cleaned, df_quotes_cleaned, on='participant_time_ny', how='outer')
 
     lookup = df_exchanges['mic'].to_dict()
     ex_cols = ['trade_ex', 'ask_exchange', 'bid_exchange']
@@ -174,55 +177,68 @@ def prepare_joined_df(df_trades: pd.DataFrame, df_quotes: pd.DataFrame, df_excha
 def build_chart(trade_quote_df: pd.DataFrame, ticker: str):
     fig = go.Figure()
 
-    df = trade_quote_df.sort_values("time").copy()
+    # keep your current data as-is (time is already NY string with ns)
+    df = trade_quote_df.sort_values("participant_time_ny").copy()
 
-    df_trades = df[['time', 'trade_price', 'trade_size', 'trade_ex']]
-    df_l1_ask = df[['time', 'ask_price', 'ask_size', 'ask_exchange']]
-    df_l1_bid = df[['time', 'bid_price', 'bid_size', 'bid_exchange']]
+    df_trades = df[['participant_time_ny', 'trade_price', 'trade_size', 'trade_ex']]
+    df_l1_ask = df[['participant_time_ny', 'ask_price', 'ask_size', 'ask_exchange']]
+    df_l1_bid = df[['participant_time_ny', 'bid_price', 'bid_size', 'bid_exchange']]
 
-    # 1. Bid/Ask spread
+    # 1. Bid/Ask spread ---------------------------------------------------
     fig.add_trace(go.Scattergl(
-        x=df_l1_ask['time'],
+        x=df_l1_ask['participant_time_ny'],
         y=df_l1_ask['ask_price'],
         line=dict(width=1, color='#006c09'),
-        name='Ask',
+        name='Ask'
+    ))
+
+    fig.add_trace(go.Scattergl(
+        name="Ask Price",
+        mode="markers",
+        marker=dict(size=4, color='grey'),
+        x=df_l1_ask["participant_time_ny"],
+        y=df_l1_ask["ask_price"],
         hoverinfo='skip',
     ))
 
     fig.add_trace(go.Scattergl(
-        name="Ask Price", 
-        mode="markers", 
-        marker=dict(size=4, color='grey'),
-        x=df_l1_ask["time"],
-        y=df_l1_ask["ask_price"]
-    ))
-
-    fig.add_trace(go.Scattergl(
-        x=df_l1_bid['time'],
+        x=df_l1_bid['participant_time_ny'],
         y=df_l1_bid['bid_price'],
         line=dict(width=1, color='#7b0000'),
         name='Bid',
-        fill='tonexty',
-        fillcolor='rgba(251, 244, 142, 0.25)',
-        hoverinfo='skip'
+        # fill='tonexty',
+        # fillcolor='rgba(251, 244, 142, 0.25)'
     ))
 
     fig.add_trace(go.Scattergl(
-        name="Bid Price", 
-        mode="markers", 
+        name="Bid Price",
+        mode="markers",
         marker=dict(size=4, color='grey'),
-        x=df_l1_bid["time"],
-        y=df_l1_bid["bid_price"]
+        x=df_l1_bid["participant_time_ny"],
+        y=df_l1_bid["bid_price"],
+        hoverinfo='skip',
     ))
 
-    # 2. Trades
+    # 2. Trades -----------------------------------------------------------
     raw_sizes = df_trades['trade_size'].fillna(0).clip(lower=0)
-    max_size = raw_sizes.replace(0, 1).max()       # avoid division by zero
-    marker_sizes = raw_sizes / max_size * 400 + 4   # scale to reasonable range
-    marker_sizes[raw_sizes == 0] = 1            # quote-only rows = tiny invisible dot
+
+    # scale marker size only by trades (ignore quote-only rows)
+    trade_mask = df_trades['trade_price'].notna()
+    max_size = raw_sizes[trade_mask].replace(0, 1).max()
+    marker_sizes = (raw_sizes / max_size).pow(0.5) * 400 + 4 
+    marker_sizes[raw_sizes == 0] = 1 
+
+    # customdata: [size, exchange]
+    customdata = np.stack(
+        [
+            df_trades['trade_size'].fillna(0).astype(int).values,
+            df_trades['trade_ex'].astype(str).values,
+        ],
+        axis=-1
+    )
 
     fig.add_trace(go.Scattergl(
-        x=df_trades['time'],
+        x=df_trades['participant_time_ny'],
         y=df_trades['trade_price'],
         mode='markers',
         name='Trades',
@@ -235,22 +251,25 @@ def build_chart(trade_quote_df: pd.DataFrame, ticker: str):
             opacity=0.85,
             line=dict(width=0)
         ),
-        text=df_trades['trade_size'].fillna(0).astype(int).astype(str),
-        hovertemplate=
-            '<b>Trade</b><br>' +
-            # 'Time: %{x|%H:%M:%S.%L}<br>' +
-            'Price: %{y:,.4f}<br>' +
-            'Size: %{text}<br>' +
-            'Exchange: ' + df_trades['trade_ex'] +
+        # text is optional; here we keep just size so hovertemplate is clean
+        text=df_trades['trade_size'].fillna(0).astype(int),
+        customdata=customdata,
+        hovertemplate=(
+            '%{x}<br>' 
+            '<b>Trade</b><br>'
+            'Price: %{y:,.4f}<br>'
+            'Size: %{customdata[0]}<br>'
+            'Exchange: %{customdata[1]}'
             '<extra></extra>'
+        )
     ))
 
-    # 3. Show 
+    # 3. Layout -----------------------------------------------------------
     fig.update_layout(
         showlegend=False,
         title=f"{ticker} – Full Tick-by-Tick Replay",
         height=700,
-        hovermode='x unified',
+        hovermode='x unified',  # try 'closest' while debugging. df - x unified
         margin=dict(l=40, r=40, t=60, b=20),
         dragmode='zoom',
         xaxis=dict(
@@ -268,13 +287,12 @@ def build_chart(trade_quote_df: pd.DataFrame, ticker: str):
         ),
     )
 
-
     return fig
+
 
 
 def build_chart_alt(trade_quote_df: pd.DataFrame, ticker: str) -> alt.Chart:
     """Create layered Altair chart: bid/ask band, trades, and quote points."""
-    # Y domain: gentle band around mid (robust to outliers)
     prices = pd.concat(
         [
             trade_quote_df.get("trade_price", pd.Series(dtype=float)),
