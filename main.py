@@ -41,7 +41,7 @@ def main() -> None:
 
         c5, c6 = st.columns(2)
         api_key = c5.text_input("Enter your key", type="password", key="key")
-        c6.selectbox('Select engine', ['Plotly', 'Altair', 'Table'], key="chart_engine")
+        c6.selectbox('Select engine', ['Chart', 'Table'], key="chart_engine")
 
         # MUST be inside the form:
         run = st.form_submit_button("Submit")
@@ -80,7 +80,7 @@ def main() -> None:
                 chart = build_chart_alt(trade_quote_df, ticker)
                 st.altair_chart(chart, use_container_width=True)
                 return
-            case 'Plotly':
+            case 'Chart':
                 chart = build_chart(trade_quote_df, ticker)
                 st.plotly_chart(chart, use_container_width=True,
                 config={
