@@ -40,7 +40,7 @@ def main() -> None:
         time_str = st.session_state.get("time")
 
         c5, c6 = st.columns(2)
-        api_key = c5.text_input("Polygon API Key", type="password", key="key")
+        api_key = c5.text_input("Enter your key", type="password", key="key")
         c6.selectbox('Select engine', ['Plotly', 'Altair'], key="chart_engine")
 
         # MUST be inside the form:
