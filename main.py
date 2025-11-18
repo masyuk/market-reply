@@ -41,7 +41,7 @@ def main() -> None:
 
         c5, c6 = st.columns(2)
         api_key = c5.text_input("Polygon API Key", type="password", key="key")
-        c6.selectbox('Select engine', ['Altair', 'Plotly'], key="chart_engine")
+        c6.selectbox('Select engine', ['Plotly', 'Altair'], key="chart_engine")
 
         # MUST be inside the form:
         run = st.form_submit_button("Submit")
@@ -103,6 +103,13 @@ def fetch_exchanges_cached() -> pd.DataFrame:
 
     return df_exchanges
 
+def format_ny_with_ns(ts_ns):
+    ts_utc = pd.Timestamp(ts_ns, unit='ns', tz='UTC')
+    ts_ny = ts_utc.tz_convert('America/New_York')
+
+    base = ts_ny.strftime('%Y-%m-%d %H:%M:%S')
+    ns = ts_ns % 1_000_000_000
+    return f"{base}.{ns:09d} NY"
 
 def fetch_data(api_key: str, ticker: str, start_utc: str, end_utc: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Pull trades, quotes, and exchanges for a window."""
@@ -118,7 +125,7 @@ def fetch_data(api_key: str, ticker: str, start_utc: str, end_utc: str) -> tuple
                      (df_quotes, ["participant_timestamp", "sip_timestamp"])]:
         for col in cols:
             if col in df.columns:
-                df[col] = pd.to_datetime(df[col], unit="ns", errors="coerce")
+                df[col] = df[col].apply(format_ny_with_ns)
 
     df_exchanges = fetch_exchanges_cached()
 
@@ -228,10 +235,10 @@ def build_chart(trade_quote_df: pd.DataFrame, ticker: str):
             opacity=0.85,
             line=dict(width=0)
         ),
-        text=df_trades['trade_ex'] + ' | ' + df_trades['trade_size'].fillna(0).astype(int).astype(str),
+        text=df_trades['trade_size'].fillna(0).astype(int).astype(str),
         hovertemplate=
             '<b>Trade</b><br>' +
-            'Time: %{x|%H:%M:%S.%L}<br>' +
+            # 'Time: %{x|%H:%M:%S.%L}<br>' +
             'Price: %{y:,.4f}<br>' +
             'Size: %{text}<br>' +
             'Exchange: ' + df_trades['trade_ex'] +
